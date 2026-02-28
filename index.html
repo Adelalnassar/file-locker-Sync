@@ -113,7 +113,7 @@ const firebaseApp = initializeApp(firebaseConfig);
 const db = getFirestore(firebaseApp);
 
 // Each chunk ~700KB of base64 — safely under Firestore's 1MB doc limit
-const CHUNK_SIZE = 700 * 1024;
+const CHUNK_SIZE = 500 * 1024; // 500KB per chunk - safe under Firestore 1MB limit
 
 var S = {
   isLocked: true, password: '', storedPassword: '',
@@ -157,7 +157,19 @@ async function saveFileChunked(file, dataUrl) {
   var total = Math.ceil(dataUrl.length / CHUNK_SIZE);
   for (var c = 0; c < total; c++) {
     var chunk = dataUrl.slice(c * CHUNK_SIZE, (c + 1) * CHUNK_SIZE);
-    await setDoc(doc(db, 'vault', 'chunks', file.id + '_' + c), { data: chunk, index: c });
+    // Retry each chunk up to 3 times
+    var saved = false;
+    for (var attempt = 0; attempt < 3; attempt++) {
+      try {
+        await setDoc(doc(db, 'vault', 'chunks', file.id + '_' + c), { data: chunk, index: c });
+        saved = true;
+        break;
+      } catch(e) {
+        console.warn('Chunk ' + c + ' attempt ' + attempt + ' failed:', e.message);
+        await new Promise(function(r){ setTimeout(r, 1000 * (attempt + 1)); });
+      }
+    }
+    if (!saved) throw new Error('Failed to upload chunk ' + c + ' after 3 attempts');
     S.uploadProgress = Math.round(((c + 1) / total) * 100);
     showSync('syncing', 'Uploading ' + (c+1) + '/' + total + ' parts...');
     render();
@@ -593,7 +605,7 @@ async function handleUpload(e) {
       await saveFileChunked(newFile,dataUrl);
       S.files.push(newFile);
       render();
-    }catch(err){console.error(err);S.error='Failed to upload '+file.name;}
+    }catch(err){console.error(err);S.error='Failed to upload '+file.name+' - '+( err.message||err.code||'unknown error');}
   }
   S.uploading=false;S.uploadProgress=0;e.target.value='';flash(files.length+' file(s) uploaded');
 }
